@@ -9,10 +9,11 @@ from sql_metadata import Parser
 from sqlalchemy import MetaData
 
 
-def read_sql(sql, con, chunksize=None, chport=8123, **kwargs):
+def read_sql(sql, con, chunksize=None, port_shift=-877, **kwargs):
     if con.engine.name == "clickhouse":
+        port = con.url.port + port_shift
         connection = {
-            "host": "http://" + con.url.host + ":" + str(chport), 
+            "host": "http://" + con.url.host + ":" + str(port), 
             "database": con.url.database,
             "user": con.url.username,
             "password": con.url.password
@@ -47,15 +48,19 @@ def read_sql(sql, con, chunksize=None, chport=8123, **kwargs):
     return map(transform, df) if chunksize else transform(df)
 
 
-def to_sql(df, name, con, **kwargs):
+def to_sql(df, name, con, port_shift=-877, **kwargs):
     if con.engine.name == "clickhouse":
+        port = con.url.port + port_shift
         connection = {
-            "host": con.url.host + ":" + con.url.port, 
+            "host": "http://" + con.url.host + ":" + str(port), 
             "database": con.url.database,
             "user": con.url.username,
             "password": con.url.password
         }
-        to_clickhouse(df, name, connection, **kwargs)
+        for c in df.columns:
+            if df[c].dtype.name.startswith("timedelta"):
+                df[c] = df[c].dt.total_seconds().mul(1e6).astype("int64")
+        to_clickhouse(df, name, connection=connection, **kwargs)
     else:
         df.to_sql(name, con, if_exists="append", **kwargs)
-        
+
