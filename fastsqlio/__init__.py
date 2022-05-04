@@ -9,7 +9,7 @@ from sql_metadata import Parser
 from sqlalchemy import MetaData
 
 
-def read_sql(sql, con, chunksize=None, port_shift=-877, **kwargs):
+def read_sql(sql, con, chunksize=None, port_shift=0, **kwargs):
     if con.engine.name == "clickhouse":
         port = con.url.port + port_shift
         connection = {
@@ -48,7 +48,7 @@ def read_sql(sql, con, chunksize=None, port_shift=-877, **kwargs):
     return map(transform, df) if chunksize else transform(df)
 
 
-def to_sql(df, name, con, port_shift=-877, **kwargs):
+def to_sql(df, name, con, port_shift=0, **kwargs):
     if con.engine.name == "clickhouse":
         port = con.url.port + port_shift
         connection = {
