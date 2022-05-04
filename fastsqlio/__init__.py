@@ -61,6 +61,11 @@ def to_sql(df, name, con, port_shift=-877, **kwargs):
             if df[c].dtype.name.startswith("timedelta"):
                 df[c] = df[c].dt.total_seconds().mul(1e6).astype("int64")
         to_clickhouse(df, name, connection=connection, **kwargs)
+    elif con.engine.name == "mysql":
+        for c in df.columns:
+            if df[c].dtype.name.startswith("timedelta"):
+                df[c] = df[c].add(pd.Timestamp(0)).dt.time
+        df.to_sql(name, con, if_exists="append", **kwargs)
     else:
         df.to_sql(name, con, if_exists="append", **kwargs)
 
