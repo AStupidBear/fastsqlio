@@ -24,14 +24,18 @@ def ignore_insert(conn, cursor, statement, parameters, context, executemany):
 def read_sql(sql, con, chunksize=None, port_shift=0, **kwargs):
     url = con.engine.url
     if url.drivername.startswith("clickhouse"):
-        port = url.port + port_shift
-        connection = {
-            "host": "http://" + url.host + ":" + str(port), 
-            "database": url.database,
-            "user": url.username,
-            "password": url.password
-        }
-        df = read_clickhouse(sql, connection=connection, chunksize=chunksize, **kwargs)
+        if url.drivername == "clickhouse+native" and chunksize is None:
+            client = con.connection.connection.transport
+            df = client.query_dataframe(sql)
+        else:
+            port = url.port + port_shift
+            connection = {
+                "host": "http://" + url.host + ":" + str(port), 
+                "database": url.database,
+                "user": url.username,
+                "password": url.password
+            }
+            df = read_clickhouse(sql, connection=connection, chunksize=chunksize, **kwargs)
         def transform(df):
             for c in df.columns:
                 if re.match("^time$", c, re.IGNORECASE) and \
@@ -39,21 +43,18 @@ def read_sql(sql, con, chunksize=None, port_shift=0, **kwargs):
                     df[c] = pd.to_timedelta(df[c], unit="us")
             return df
     elif url.drivername.startswith("duckdb"):
-        import duckdb
-        con = duckdb.connect(url.database)
-        query = con.execute(sql)
+        c = con.connection.c
+        query = c.execute(sql)
         if chunksize is None:
-            df = query.fetchdf()
-            con.close()
+            df = c.fetchdf()
         else:
             def fetch_df_chunk(query, con):
                 while True:
                     df = query.fetch_df_chunk()
                     if len(df) == 0:
-                        con.close()
                         break
                     yield df
-            df = fetch_df_chunk(query, con)
+            df = fetch_df_chunk(query, c)
         def transform(df):
             for c in df.columns:
                 if re.match("^time$", c, re.IGNORECASE) and \
@@ -84,7 +85,7 @@ def read_sql(sql, con, chunksize=None, port_shift=0, **kwargs):
     return map(transform, df) if chunksize else transform(df)
 
 
-def to_sql(df, name, con, port_shift=0, if_exists="append", keys=None, dtype=None, clengine="ReplacingMergeTree()", ignore_duplicate=True, **kwargs):
+def to_sql(df, name, con, port_shift=0, index=False, if_exists="append", keys=None, dtype=None, clengine="ReplacingMergeTree()", compression="false", ignore_duplicate=True, **kwargs):
     url = con.engine.url
     if url.drivername.startswith("clickhouse"):
         mycon = create_engine(re.sub("clickhouse\+\w+(?=:)", "mysql", str(url)))
@@ -96,23 +97,29 @@ def to_sql(df, name, con, port_shift=0, if_exists="append", keys=None, dtype=Non
     schema = re.sub("CREATE TABLE", "CREATE TABLE IF NOT EXISTS", schema)
     con.execute(schema)
     if url.drivername.startswith("clickhouse"):
-        port = url.port + port_shift
-        connection = {
-            "host": "http://" + url.host + ":" + str(port), 
-            "database": url.database,
-            "user": url.username,
-            "password": url.password
-        }
+        if url.drivername == "clickhouse+native":
+            client = con.connection.connection.transport
+            client.insert_dataframe(f"INSERT INTO {name} VALUES", df)
+        else:
+            port = url.port + port_shift
+            connection = {
+                "host": "http://" + url.host + ":" + str(port), 
+                "database": url.database,
+                "user": url.username,
+                "password": url.password
+            }
+            for c in df.columns:
+                if df[c].dtype.name.startswith("timedelta"):
+                    df[c] = df[c].dt.total_seconds().mul(1e6).astype("int64")
+            to_clickhouse(df, name, connection=connection, index=index, **kwargs)
+    elif url.drivername.startswith("duckdb"):
         for c in df.columns:
             if df[c].dtype.name.startswith("timedelta"):
                 df[c] = df[c].dt.total_seconds().mul(1e6).astype("int64")
-        to_clickhouse(df, name, connection=connection, **kwargs)
-    elif url.drivername.startswith("duckdb"):
-        import duckdb
-        con = duckdb.connect(url.database)
-        rel = con.from_df(df)
-        rel.insert_into(name)
-        con.close()
+        c = con.connection.c
+        c.from_df(df).insert_into(name)
+        # c.register("df", df)
+        # c.execute(f"INSERT INTO {name} SELECT * FROM df")
     else:
         if url.drivername.startswith("mysql"):
             for c in df.columns:
@@ -120,4 +127,4 @@ def to_sql(df, name, con, port_shift=0, if_exists="append", keys=None, dtype=Non
                     df[c] = df[c].add(pd.Timestamp(0)).dt.time
         if ignore_duplicate and not event.contains(con, "before_cursor_execute", ignore_insert):
             event.listen(con, "before_cursor_execute", ignore_insert, retval=True)
-        df.to_sql(name, con, if_exists=if_exists, dtype=dtype, **kwargs)
+        df.to_sql(name, con, index=index, if_exists=if_exists, dtype=dtype, **kwargs)
