@@ -1,8 +1,8 @@
 import datetime
+import importlib
 import platform
 import re
 
-import connectorx as cx
 import pandas as pd
 from pandahouse import read_clickhouse, to_clickhouse
 from sql_metadata import Parser
@@ -68,9 +68,11 @@ def read_sql(sql, con, chunksize=None, port_shift=0, **kwargs):
         for t in tables:
             for c in meta.tables[t].columns:
                 dtypes[c.name] = c.type.python_type
-        if platform.processor() == "aarch64" or chunksize:
+        connectorx_spec = importlib.util.find_spec("connectorx")
+        if platform.processor() == "aarch64" or chunksize or connectorx_spec is None:
             df = pd.read_sql(sql, con, chunksize=chunksize, **kwargs)
         else:
+            import connectorx as cx
             df = cx.read_sql(re.sub("\+\w+(?=:)", "", str(url)), sql, **kwargs)
         def transform(df):
             for c in df.columns:
@@ -92,7 +94,6 @@ def to_sql(df, name, con, port_shift=0, if_exists="append", keys=None, dtype=Non
     else:
         schema = pd.io.sql.get_schema(df, name, keys, con, dtype)
     schema = re.sub("CREATE TABLE", "CREATE TABLE IF NOT EXISTS", schema)
-    print(schema)
     con.execute(schema)
     if url.drivername.startswith("clickhouse"):
         port = url.port + port_shift
@@ -108,7 +109,6 @@ def to_sql(df, name, con, port_shift=0, if_exists="append", keys=None, dtype=Non
         to_clickhouse(df, name, connection=connection, **kwargs)
     elif url.drivername.startswith("duckdb"):
         import duckdb
-        df.head(0).to_sql(name, con, **kwargs)
         con = duckdb.connect(url.database)
         rel = con.from_df(df)
         rel.insert_into(name)
