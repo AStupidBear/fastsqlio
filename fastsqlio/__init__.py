@@ -24,9 +24,10 @@ def ignore_insert(conn, cursor, statement, parameters, context, executemany):
 def read_sql(sql, con, chunksize=None, port_shift=0, **kwargs):
     url = con.engine.url
     if url.drivername.startswith("clickhouse"):
-        if url.drivername == "clickhouse+native" and chunksize is None:
+        if url.drivername == "clickhouse+native":
             client = con.connection.connection.transport
             df = client.query_dataframe(sql)
+            df = df if chunksize is None else [df]
         else:
             port = url.port + port_shift
             connection = {
