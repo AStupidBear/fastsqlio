@@ -89,15 +89,14 @@ def read_sql(sql, con, chunksize=None, port_shift=0, **kwargs):
 def to_sql(df, name, con, port_shift=0, index=False, if_exists="append", keys=None, dtype=None, clengine="ReplacingMergeTree()", compression="false", ignore_duplicate=True, **kwargs):
     url = con.engine.url
     if url.drivername.startswith("clickhouse"):
+        for c in df.columns[df.dtypes == "timedelta64[ns]"]:
+            df[c] = df[c].dt.total_seconds().mul(1e6).astype("int64")
         mycon = create_engine(re.sub("clickhouse\+\w+(?=:)", "mysql", str(url)))
         schema = pd.io.sql.get_schema(df, name, keys, mycon, dtype)
         schema = re.sub(".*(?=PRIMARY)", "", schema)
         schema += " ENGINE = " + clengine
-    else:
-        schema = pd.io.sql.get_schema(df, name, keys, con, dtype)
-    schema = re.sub("CREATE TABLE", "CREATE TABLE IF NOT EXISTS", schema)
-    con.execute(schema)
-    if url.drivername.startswith("clickhouse"):
+        schema = re.sub("CREATE TABLE", "CREATE TABLE IF NOT EXISTS", schema)
+        con.execute(schema)
         if url.drivername == "clickhouse+native":
             client = con.connection.connection.transport
             client.insert_dataframe(f"INSERT INTO {name} VALUES", df)
@@ -109,23 +108,20 @@ def to_sql(df, name, con, port_shift=0, index=False, if_exists="append", keys=No
                 "user": url.username,
                 "password": url.password
             }
-            for c in df.columns:
-                if df[c].dtype.name.startswith("timedelta"):
-                    df[c] = df[c].dt.total_seconds().mul(1e6).astype("int64")
             to_clickhouse(df, name, connection=connection, index=index, **kwargs)
     elif url.drivername.startswith("duckdb"):
-        for c in df.columns:
-            if df[c].dtype.name.startswith("timedelta"):
-                df[c] = df[c].dt.total_seconds().mul(1e6).astype("int64")
-        c = con.connection.c
-        c.from_df(df).insert_into(name)
-        # c.register("df", df)
-        # c.execute(f"INSERT INTO {name} SELECT * FROM df")
+        for c in df.columns[df.dtypes == "timedelta64[ns]"]:
+            df[c] = df[c].dt.total_seconds().mul(1e6).astype("int64")
+        schema = pd.io.sql.get_schema(df, name, keys, con, dtype)
+        schema = re.sub("CREATE TABLE", "CREATE TABLE IF NOT EXISTS", schema)
+        con.execute(schema)
+        conn = con.connection.c
+        conn.from_df(df).insert_into(name)
+        # conn.register("df", df)
+        # conn.execute(f"INSERT INTO {name} SELECT * FROM df")
     else:
-        if url.drivername.startswith("mysql"):
-            for c in df.columns:
-                if df[c].dtype.name.startswith("timedelta"):
-                    df[c] = df[c].add(pd.Timestamp(0)).dt.time
+        for c in df.columns[df.dtypes == "timedelta64[ns]"]:
+            df[c] = df[c].add(pd.Timestamp(0)).dt.time
         if ignore_duplicate and not event.contains(con, "before_cursor_execute", ignore_insert):
             event.listen(con, "before_cursor_execute", ignore_insert, retval=True)
         df.to_sql(name, con, index=index, if_exists=if_exists, dtype=dtype, **kwargs)
