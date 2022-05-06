@@ -21,6 +21,28 @@ def ignore_insert(conn, cursor, statement, parameters, context, executemany):
     return statement, parameters
 
 
+def drop_duplicates(df, name, con, category_keys=[], range_keys=[], primary_keys=None):
+    if con.engine.name != "clickhouse":
+        return df
+    if primary_keys is None:
+        meta = MetaData(con)
+        meta.reflect()
+        primary_keys = meta.tables[name].engine.primary_key.expressions
+    sql = f"SELECT {','.join(primary_keys)} FROM {name}"
+    conditions = []
+    for key in category_keys:
+        conditions +=  f"{key} IN " + str(list(df[key].unique())).replace("[", "(").replace("]", ")")
+    for key in range_keys:
+        conditions += f"{key} BETWEEN {df[key].min()} AND {df[key].max()}"
+    if len(conditions) > 0:
+        sql += "WHERE " + " AND ".join(conditions)
+    df_sql = read_sql(sql, con)
+    if len(df_sql) == 0:
+        return df
+    index = pd.MultiIndex.from_frame(df_sql)
+    return df.set_index(primary_keys).drop(index=index, errors="ignore").reset_index()
+
+
 def read_sql(sql, con, chunksize=None, port_shift=0, **kwargs):
     url = con.engine.url
     if url.drivername.startswith("clickhouse"):
@@ -86,7 +108,7 @@ def read_sql(sql, con, chunksize=None, port_shift=0, **kwargs):
     return map(transform, df) if chunksize else transform(df)
 
 
-def to_sql(df, name, con, port_shift=0, index=False, if_exists="append", keys=None, dtype=None, clengine="ReplacingMergeTree()", compression="false", ignore_duplicate=True, **kwargs):
+def to_sql(df, name, con, port_shift=0, index=False, if_exists="append", keys=None, dtype=None, clengine="ReplacingMergeTree()", ignore_duplicate=True, category_keys=[], range_keys=[], **kwargs):
     url = con.engine.url
     if url.drivername.startswith("clickhouse"):
         for c in df.columns[df.dtypes == "timedelta64[ns]"]:
@@ -97,6 +119,8 @@ def to_sql(df, name, con, port_shift=0, index=False, if_exists="append", keys=No
         schema += " ENGINE = " + clengine
         schema = re.sub("CREATE TABLE", "CREATE TABLE IF NOT EXISTS", schema)
         con.execute(schema)
+        if ignore_duplicate:
+            df = drop_duplicates(df, name, con, category_keys, range_keys, keys)
         if url.drivername == "clickhouse+native":
             client = con.connection.connection.transport
             client.insert_dataframe(f"INSERT INTO {name} VALUES", df)
@@ -115,6 +139,8 @@ def to_sql(df, name, con, port_shift=0, index=False, if_exists="append", keys=No
         schema = pd.io.sql.get_schema(df, name, keys, con, dtype)
         schema = re.sub("CREATE TABLE", "CREATE TABLE IF NOT EXISTS", schema)
         con.execute(schema)
+        if ignore_duplicate:
+            df = drop_duplicates(df, name, con, category_keys, range_keys, keys)
         conn = con.connection.c
         conn.from_df(df).insert_into(name)
         # conn.register("df", df)
