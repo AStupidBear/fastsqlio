@@ -2,6 +2,7 @@ import datetime
 import importlib
 import platform
 import re
+from numbers import Number
 
 import pandas as pd
 from pandahouse import read_clickhouse, to_clickhouse
@@ -21,21 +22,40 @@ def ignore_insert(conn, cursor, statement, parameters, context, executemany):
     return statement, parameters
 
 
-def drop_duplicates(df, name, con, category_keys=[], range_keys=[], primary_keys=None):
+def convert(pytype, value):
+    if isinstance(value, datetime.datetime) and pytype == datetime.date:
+        return value.date()
+    else:
+        return value
+
+
+def sqlquote(value):
+    if isinstance(value, Number):
+        return str(value)
+    else:
+        return "'" + str(value) + "'"
+
+
+def drop_duplicates(df, name, con, category_keys=[], range_keys=[]):
     if con.engine.name != "clickhouse":
         return df
-    if primary_keys is None:
-        meta = MetaData(con)
-        meta.reflect()
-        primary_keys = meta.tables[name].engine.primary_key.expressions
+    meta = MetaData(con)
+    meta.reflect()
+    table = meta.tables[name]
+    primary_keys = table.engine.primary_key.expressions
     sql = f"SELECT {','.join(primary_keys)} FROM {name}"
     conditions = []
     for key in category_keys:
-        conditions +=  f"{key} IN " + str(list(df[key].unique())).replace("[", "(").replace("]", ")")
+        pytype = table.columns[key].type.python_type
+        uniq = ",".join([sqlquote(convert(pytype, x)) for x in df[key].unique()])
+        conditions.append(f"({key} IN (" + uniq + "))")
     for key in range_keys:
-        conditions += f"{key} BETWEEN {df[key].min()} AND {df[key].max()}"
+        pytype = table.columns[key].type.python_type
+        vmin = sqlquote(convert(pytype, df[key].min()))
+        vmax = sqlquote(convert(pytype, df[key].max()))
+        conditions.append(f"({key} BETWEEN {vmin} AND {vmax})")
     if len(conditions) > 0:
-        sql += "WHERE " + " AND ".join(conditions)
+        sql += " WHERE " + " AND ".join(conditions)
     df_sql = read_sql(sql, con)
     if len(df_sql) == 0:
         return df
@@ -120,7 +140,7 @@ def to_sql(df, name, con, port_shift=0, index=False, if_exists="append", keys=No
         schema = re.sub("CREATE TABLE", "CREATE TABLE IF NOT EXISTS", schema)
         con.execute(schema)
         if ignore_duplicate:
-            df = drop_duplicates(df, name, con, category_keys, range_keys, keys)
+            df = drop_duplicates(df, name, con, category_keys, range_keys)
         if url.drivername == "clickhouse+native":
             client = con.connection.connection.transport
             client.insert_dataframe(f"INSERT INTO {name} VALUES", df)
@@ -140,7 +160,7 @@ def to_sql(df, name, con, port_shift=0, index=False, if_exists="append", keys=No
         schema = re.sub("CREATE TABLE", "CREATE TABLE IF NOT EXISTS", schema)
         con.execute(schema)
         if ignore_duplicate:
-            df = drop_duplicates(df, name, con, category_keys, range_keys, keys)
+            df = drop_duplicates(df, name, con, category_keys, range_keys)
         conn = con.connection.c
         conn.from_df(df).insert_into(name)
         # conn.register("df", df)
