@@ -36,13 +36,18 @@ def sqlquote(value):
         return "'" + str(value) + "'"
 
 
+
 def drop_duplicates(df, name, con, category_keys=[], range_keys=[]):
-    if con.engine.name != "clickhouse":
+    if not re.match("clickhouse|duckdb", con.engine.url.drivername):
         return df
     meta = MetaData(con)
     meta.reflect()
     table = meta.tables[name]
-    primary_keys = table.engine.primary_key.expressions
+    if con.engine.url.drivername.startswith("clickhouse"):
+        primary_keys = table.engine.primary_key.expressions
+    else:
+        info = read_sql(f"PRAGMA table_info('{name}')", con)
+        primary_keys = info.query("pk == True")["name"].to_list()
     sql = f"SELECT {','.join(primary_keys)} FROM {name}"
     conditions = []
     for key in category_keys:
@@ -59,7 +64,10 @@ def drop_duplicates(df, name, con, category_keys=[], range_keys=[]):
     df_sql = read_sql(sql, con)
     if len(df_sql) == 0:
         return df
-    index = pd.MultiIndex.from_frame(df_sql)
+    if len(primary_keys) > 1:
+        index = pd.MultiIndex.from_frame(df_sql)
+    else:
+        index = df_sql[primary_keys[0]]
     return df.set_index(primary_keys).drop(index=index, errors="ignore").reset_index()
 
 
