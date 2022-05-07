@@ -36,7 +36,6 @@ def sqlquote(value):
         return "'" + str(value) + "'"
 
 
-
 def drop_duplicates(df, name, con, category_keys=[], range_keys=[]):
     if not re.match("clickhouse|duckdb", con.engine.url.drivername):
         return df
@@ -139,6 +138,8 @@ def read_sql(sql, con, chunksize=None, port_shift=0, **kwargs):
 def to_sql(df, name, con, port_shift=0, index=False, if_exists="append", keys=None, dtype=None, clengine="ReplacingMergeTree()", ignore_duplicate=True, category_keys=[], range_keys=[], **kwargs):
     url = con.engine.url
     if url.drivername.startswith("clickhouse"):
+        if index:
+            df = df.reset_index()
         for c in df.columns[df.dtypes == "timedelta64[ns]"]:
             df[c] = df[c].dt.total_seconds().mul(1e6).astype("int64")
         mycon = create_engine(re.sub("clickhouse\+\w+(?=:)", "mysql", str(url)))
@@ -162,6 +163,8 @@ def to_sql(df, name, con, port_shift=0, index=False, if_exists="append", keys=No
             }
             to_clickhouse(df, name, connection=connection, index=index, **kwargs)
     elif url.drivername.startswith("duckdb"):
+        if index:
+            df = df.reset_index()
         for c in df.columns[df.dtypes == "timedelta64[ns]"]:
             df[c] = df[c].dt.total_seconds().mul(1e6).astype("int64")
         schema = pd.io.sql.get_schema(df, name, keys, con, dtype)
