@@ -161,7 +161,7 @@ def to_sql(df, name, con, port_shift=0, index=False, if_exists="append", keys=No
                 "user": url.username,
                 "password": url.password
             }
-            to_clickhouse(df, name, connection=connection, index=index, **kwargs)
+            to_clickhouse(df, name, connection=connection, index=False, **kwargs)
     elif url.drivername.startswith("duckdb"):
         if index:
             df = df.reset_index()
