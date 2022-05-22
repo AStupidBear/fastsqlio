@@ -142,7 +142,7 @@ def to_sql(df, name, con, port_shift=0, index=False, if_exists="append", keys=No
             df = df.reset_index()
         for c in df.columns[df.dtypes == "timedelta64[ns]"]:
             df[c] = df[c].dt.total_seconds().mul(1e6).astype("int64")
-        mycon = create_engine(re.sub("clickhouse\+\w+(?=:)", "mysql", str(url)))
+        mycon = create_engine(re.sub("clickhouse\+\w+(?=:)", "mysql+pymysql", str(url)))
         schema = pd.io.sql.get_schema(df, name, keys, mycon, dtype)
         schema = re.sub(".*(?=PRIMARY)", "", schema)
         schema += " ENGINE = " + clengine
