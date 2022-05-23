@@ -70,12 +70,31 @@ def drop_duplicates(df, name, con, category_keys=[], range_keys=[]):
     return df.set_index(primary_keys).drop(index=index, errors="ignore").reset_index()
 
 
+def query_dataframe(
+        self, query, params=None, external_tables=None, query_id=None,
+        settings=None):
+    try:
+        import pandas as pd
+    except ImportError:
+        raise RuntimeError('Extras for NumPy must be installed')
+
+    data, columns = self.execute(
+        query, columnar=True, with_column_types=True, params=params,
+        external_tables=external_tables, query_id=query_id,
+        settings=settings
+    )
+
+    return pd.DataFrame(
+        {col[0]: d for d, col in zip(data, columns)}
+    )
+
+
 def read_sql(sql, con, chunksize=None, port_shift=0, **kwargs):
     url = con.engine.url
     if url.drivername.startswith("clickhouse"):
         if url.drivername == "clickhouse+native":
             client = con.connection.connection.transport
-            df = client.query_dataframe(sql)
+            df = query_dataframe(client, sql)
             df = df if chunksize is None else [df]
         else:
             port = url.port + port_shift
