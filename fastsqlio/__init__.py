@@ -127,6 +127,8 @@ def read_sql(sql, con, chunksize=None, port_shift=0, **kwargs):
             df = cx.read_sql(re.sub("\+\w+(?=:)", "", str(url)), sql, **kwargs)
         def transform(df):
             for c in df.columns:
+                if c not in dtypes:
+                    continue
                 if dtypes[c] == datetime.date:
                     df[c] = pd.to_datetime(df[c])
                 elif dtypes[c] == datetime.time:
