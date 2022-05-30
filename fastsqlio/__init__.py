@@ -160,9 +160,9 @@ def to_sql(df, name, con, port_shift=0, index=False, if_exists="append", keys=No
     if len(df) == 0:
         return
     url = con.engine.url
+    if index:
+        df = df.reset_index()
     if url.drivername.startswith("clickhouse"):
-        if index:
-            df = df.reset_index()
         for c in df.columns[df.dtypes == "timedelta64[ns]"]:
             df[c] = df[c].dt.total_seconds().mul(1e6).astype("int64")
         mycon = create_engine(re.sub("clickhouse\+\w+(?=:)", "mysql+pymysql", str(url)))
@@ -186,8 +186,6 @@ def to_sql(df, name, con, port_shift=0, index=False, if_exists="append", keys=No
             }
             to_clickhouse(df, name, connection=connection, index=False, **kwargs)
     elif url.drivername.startswith("duckdb"):
-        if index:
-            df = df.reset_index()
         for c in df.columns[df.dtypes == "timedelta64[ns]"]:
             df[c] = df[c].dt.total_seconds().mul(1e6).astype("int64")
         schema = pd.io.sql.get_schema(df, name, keys, con, dtype)
