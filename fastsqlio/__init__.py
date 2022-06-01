@@ -205,4 +205,4 @@ def to_sql(df, name, con, port_shift=0, index=False, if_exists="append", keys=No
         con.execute(schema)
         if ignore_duplicate and not event.contains(con, "before_cursor_execute", ignore_insert):
             event.listen(con, "before_cursor_execute", ignore_insert, retval=True)
-        df.to_sql(name, con, index=index, if_exists=if_exists, dtype=dtype, **kwargs)
+        df.to_sql(name, con, index=False, if_exists=if_exists, dtype=dtype, **kwargs)
