@@ -89,6 +89,13 @@ def query_dataframe(
     )
 
 
+def get_table(con, tbl):
+    schema = tbl.split(".")[0] if "." in tbl else None
+    meta = MetaData(con, schema)
+    meta.reflect()
+    return meta.tables[tbl]
+
+
 def read_sql(sql, con, chunksize=None, port_shift=0, **kwargs):
     url = con.engine.url
     if url.drivername.startswith("clickhouse"):
@@ -131,12 +138,12 @@ def read_sql(sql, con, chunksize=None, port_shift=0, **kwargs):
                     df[c] = pd.to_timedelta(df[c], unit="us")
             return df
     else:
-        tables = Parser(sql).tables
-        meta = MetaData(con)
-        meta.reflect(only=tables)
         dtypes = {}
-        for t in tables:
-            for c in meta.tables[t].columns:
+        for tbl in Parser(sql).tables:
+            schema = tbl.split(".")[0] if "." in tbl else None
+            meta = MetaData(con, schema)
+            meta.reflect()
+            for c in meta.tables[tbl].columns:
                 dtypes[c.name] = c.type.python_type
         connectorx_spec = importlib.util.find_spec("connectorx")
         if platform.processor() == "aarch64" or chunksize or connectorx_spec is None:
