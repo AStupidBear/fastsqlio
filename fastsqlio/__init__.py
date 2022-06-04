@@ -36,12 +36,38 @@ def sqlquote(value):
         return "'" + str(value) + "'"
 
 
+def get_table(con, name):
+    db = split_dbtbl(name)[0]
+    meta = MetaData(con, db)
+    meta.reflect()
+    return meta.tables[name]
+
+
+def split_dbtbl(name):
+    if "." in name:
+        return name.split(".")
+    else:
+        return None, name
+
+        
+def get_schema(df, name, keys, con, dtype, chengine="ReplacingMergeTree()"):
+    url = con.engine.url
+    isch = url.drivername.startswith("clickhouse")
+    if isch:
+        con = create_engine(re.sub("clickhouse\+\w+(?=:)", "mysql+pymysql", str(url)))
+    db, tbl = split_dbtbl(name)
+    sql = pd.io.sql.get_schema(df, tbl, keys, con, dtype, db)
+    sql = re.sub("CREATE TABLE", "CREATE TABLE IF NOT EXISTS", sql)        
+    if isch:
+        sql = re.sub(".*(?=PRIMARY)", "", sql)
+        sql += " ENGINE = " + chengine
+    return sql
+
+
 def drop_duplicates(df, name, con, category_keys=[], range_keys=[]):
     if not re.match("clickhouse|duckdb", con.engine.url.drivername):
         return df
-    meta = MetaData(con)
-    meta.reflect()
-    table = meta.tables[name]
+    table = get_table(con, name)
     if con.engine.url.drivername.startswith("clickhouse"):
         primary_keys = table.engine.primary_key.expressions
     else:
@@ -89,13 +115,6 @@ def query_dataframe(
     )
 
 
-def get_table(con, tbl):
-    schema = tbl.split(".")[0] if "." in tbl else None
-    meta = MetaData(con, schema)
-    meta.reflect()
-    return meta.tables[tbl]
-
-
 def read_sql(sql, con, chunksize=None, port_shift=0, **kwargs):
     url = con.engine.url
     if url.drivername.startswith("clickhouse"):
@@ -139,11 +158,9 @@ def read_sql(sql, con, chunksize=None, port_shift=0, **kwargs):
             return df
     else:
         dtypes = {}
-        for tbl in Parser(sql).tables:
-            schema = tbl.split(".")[0] if "." in tbl else None
-            meta = MetaData(con, schema)
-            meta.reflect()
-            for c in meta.tables[tbl].columns:
+        for name in Parser(sql).tables:
+            table = get_table(con, name)
+            for c in table.columns:
                 dtypes[c.name] = c.type.python_type
         connectorx_spec = importlib.util.find_spec("connectorx")
         if platform.processor() == "aarch64" or chunksize or connectorx_spec is None:
@@ -163,7 +180,7 @@ def read_sql(sql, con, chunksize=None, port_shift=0, **kwargs):
     return map(transform, df) if chunksize else transform(df)
 
 
-def to_sql(df, name, con, port_shift=0, index=False, if_exists="append", keys=None, dtype=None, clengine="ReplacingMergeTree()", ignore_duplicate=True, category_keys=[], range_keys=[], **kwargs):
+def to_sql(df, name, con, port_shift=0, index=False, if_exists="append", keys=None, dtype=None, chengine="ReplacingMergeTree()", ignore_duplicate=True, category_keys=[], range_keys=[], **kwargs):
     if len(df) == 0:
         return
     url = con.engine.url
@@ -172,12 +189,9 @@ def to_sql(df, name, con, port_shift=0, index=False, if_exists="append", keys=No
     if url.drivername.startswith("clickhouse"):
         for c in df.columns[df.dtypes == "timedelta64[ns]"]:
             df[c] = df[c].dt.total_seconds().mul(1e6).astype("int64")
-        mycon = create_engine(re.sub("clickhouse\+\w+(?=:)", "mysql+pymysql", str(url)))
-        schema = pd.io.sql.get_schema(df, name, keys, mycon, dtype)
-        schema = re.sub(".*(?=PRIMARY)", "", schema)
-        schema += " ENGINE = " + clengine
-        schema = re.sub("CREATE TABLE", "CREATE TABLE IF NOT EXISTS", schema)
-        con.execute(schema)
+        if keys is None:
+            keys = category_keys + range_keys
+        con.execute(get_schema(df, name, keys, con, dtype, chengine))
         if ignore_duplicate:
             df = drop_duplicates(df, name, con, category_keys, range_keys)
         if url.drivername == "clickhouse+native":
@@ -195,9 +209,7 @@ def to_sql(df, name, con, port_shift=0, index=False, if_exists="append", keys=No
     elif url.drivername.startswith("duckdb"):
         for c in df.columns[df.dtypes == "timedelta64[ns]"]:
             df[c] = df[c].dt.total_seconds().mul(1e6).astype("int64")
-        schema = pd.io.sql.get_schema(df, name, keys, con, dtype)
-        schema = re.sub("CREATE TABLE", "CREATE TABLE IF NOT EXISTS", schema)
-        con.execute(schema)
+        con.execute(get_schema(df, name, keys, con, dtype))
         if ignore_duplicate:
             df = drop_duplicates(df, name, con, category_keys, range_keys)
         conn = con.connection.c
@@ -207,9 +219,7 @@ def to_sql(df, name, con, port_shift=0, index=False, if_exists="append", keys=No
     else:
         for c in df.columns[df.dtypes == "timedelta64[ns]"]:
             df[c] = df[c].add(pd.Timestamp(0)).dt.time
-        schema = pd.io.sql.get_schema(df, name, keys, con, dtype)
-        schema = re.sub("CREATE TABLE", "CREATE TABLE IF NOT EXISTS", schema)
-        con.execute(schema)
+        con.execute(get_schema(df, name, keys, con, dtype))
         if ignore_duplicate and not event.contains(con, "before_cursor_execute", ignore_insert):
             event.listen(con, "before_cursor_execute", ignore_insert, retval=True)
         df.to_sql(name, con, index=False, if_exists=if_exists, dtype=dtype, **kwargs)
