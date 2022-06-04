@@ -8,6 +8,15 @@ import pandas as pd
 from pandahouse import read_clickhouse, to_clickhouse
 from sql_metadata import Parser
 from sqlalchemy import MetaData, create_engine, event
+from sqlalchemy.engine import Engine
+
+
+def to_conn(con):
+    if type(con) == str:
+        con = create_engine(con).connect()
+    elif type(con) == Engine:
+        con = con.connect()
+    return con
 
 
 def ignore_insert(conn, cursor, statement, parameters, context, executemany):
@@ -116,6 +125,7 @@ def query_dataframe(
 
 
 def read_sql(sql, con, chunksize=None, port_shift=0, **kwargs):
+    con = to_conn(con)
     url = con.engine.url
     if url.drivername.startswith("clickhouse"):
         if url.drivername == "clickhouse+native":
@@ -183,6 +193,7 @@ def read_sql(sql, con, chunksize=None, port_shift=0, **kwargs):
 def to_sql(df, name, con, port_shift=0, index=False, if_exists="append", keys=None, dtype=None, chengine="ReplacingMergeTree()", ignore_duplicate=True, category_keys=[], range_keys=[], **kwargs):
     if len(df) == 0:
         return
+    con = to_conn(con)
     url = con.engine.url
     if index:
         df = df.reset_index()
