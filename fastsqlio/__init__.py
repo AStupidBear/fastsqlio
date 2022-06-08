@@ -134,6 +134,8 @@ def trasform_time(df):
    
 def read_sql(sql, con, chunksize=None, port_shift=0, **kwargs):
     con = to_conn(con)
+    if chunksize is not None:
+        con = con.execution_options(stream_results=True, max_row_buffer=chunksize)
     url = con.engine.url
     if url.drivername == "clickhouse+native" and chunksize is None:
         client = con.connection.connection.transport
