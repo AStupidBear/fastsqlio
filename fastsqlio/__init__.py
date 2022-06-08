@@ -131,15 +131,24 @@ def trasform_time(df):
             df[c] = pd.to_timedelta(df[c], unit="us")
     return df
 
-   
+
 def read_sql(sql, con, chunksize=None, port_shift=0, **kwargs):
     con = to_conn(con)
     if chunksize is not None:
         con = con.execution_options(stream_results=True, max_row_buffer=chunksize)
     url = con.engine.url
-    if url.drivername == "clickhouse+native" and chunksize is None:
-        client = con.connection.connection.transport
-        df = query_dataframe(client, sql)
+    def trasform_time(df):
+        for c in df.columns:
+            if re.match("^time$", c, re.IGNORECASE) and \
+                df[c].dtype.name == "int64":
+                df[c] = pd.to_timedelta(df[c], unit="us")
+        return df
+    if url.drivername == "clickhouse+native":
+        if chunksize is None:
+            client = con.connection.connection.transport
+            df = query_dataframe(client, sql)
+        else:
+            df = pd.read_sql(sql, con, chunksize=chunksize, **kwargs)
         transform = trasform_time
     elif url.drivername == "clickhouse+http":
         port = url.port + port_shift
