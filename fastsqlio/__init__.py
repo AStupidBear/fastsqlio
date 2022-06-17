@@ -78,7 +78,7 @@ def drop_duplicates(df, name, con, category_keys=[], range_keys=[]):
         return df
     table = get_table(con, name)
     if con.engine.url.drivername.startswith("clickhouse"):
-        primary_keys = table.engine.primary_key.expressions
+        primary_keys = [c.name for c in table.engine.primary_key.columns]
     else:
         info = read_sql(f"PRAGMA table_info('{name}')", con)
         primary_keys = info.query("pk == True")["name"].to_list()
