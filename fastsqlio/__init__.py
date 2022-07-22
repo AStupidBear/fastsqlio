@@ -65,7 +65,11 @@ def get_schema(df, name, keys, con, dtype, chengine="ReplacingMergeTree()"):
     if isch:
         con = create_engine(re.sub("clickhouse\+\w+(?=:)", "mysql+pymysql", str(url)))
     db, tbl = split_dbtbl(name)
-    sql = pd.io.sql.get_schema(df, tbl, keys, con, dtype, db)
+    from inspect import signature
+    if len(signature(pd.io.sql.get_schema).parameters) == 5:
+        sql = pd.io.sql.get_schema(df, tbl, keys, con, dtype)
+    else:
+        sql = pd.io.sql.get_schema(df, tbl, keys, con, dtype, db)
     sql = re.sub("CREATE TABLE", "CREATE TABLE IF NOT EXISTS", sql)        
     if isch:
         sql = re.sub(".*(?=PRIMARY)", "", sql)
