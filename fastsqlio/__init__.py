@@ -63,7 +63,7 @@ def get_schema(df, name, keys, con, dtype, chengine="ReplacingMergeTree()"):
     url = con.engine.url
     isch = url.drivername.startswith("clickhouse")
     if isch:
-        con = create_engine(re.sub("clickhouse\+\w+(?=:)", "mysql+pymysql", str(url)))
+        con = create_engine(re.sub("clickhouse\+\w+(?=:)", "mysql+pymysql", str(url)).split("?")[0])
     db, tbl = split_dbtbl(name)
     from inspect import signature
     if len(signature(pd.io.sql.get_schema).parameters) == 5:
