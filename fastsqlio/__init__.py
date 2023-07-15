@@ -1,5 +1,4 @@
 import datetime
-import importlib
 import platform
 import re
 from numbers import Number
@@ -59,21 +58,17 @@ def split_dbtbl(name):
         return None, name
 
         
-def get_schema(df, name, keys, con, dtype, chengine="ReplacingMergeTree()"):
+def get_schema(df, name, keys, con, dtype):
     url = con.engine.url
-    isch = url.drivername.startswith("clickhouse")
-    if isch:
-        con = create_engine(re.sub("clickhouse\+\w+(?=:)", "mysql+pymysql", str(url)).split("?")[0])
+    if url.drivername.startswith("clickhouse"):
+        con = create_engine(str(url).split("?")[0])
     db, tbl = split_dbtbl(name)
     from inspect import signature
     if len(signature(pd.io.sql.get_schema).parameters) == 5:
-        sql = pd.io.sql.get_schema(df, tbl, keys, con, dtype)
+        sql = pd.io.sql.get_schema(df, tbl, keys=keys, con=con, dtype=dtype)
     else:
-        sql = pd.io.sql.get_schema(df, tbl, keys, con, dtype, db)
-    sql = re.sub("CREATE TABLE", "CREATE TABLE IF NOT EXISTS", sql)        
-    if isch:
-        sql = re.sub(".*(?=PRIMARY)", "", sql)
-        sql += " ENGINE = " + chengine
+        sql = pd.io.sql.get_schema(df, tbl, keys=keys, con=con, dtype=dtype, schema=db)
+    sql = re.sub("CREATE TABLE", "CREATE TABLE IF NOT EXISTS", sql)
     return sql
 
 
@@ -184,11 +179,14 @@ def read_sql(sql, con, chunksize=None, port_shift=0, **kwargs):
             table = get_table(con, name)
             for c in table.columns:
                 dtypes[c.name] = c.type.python_type
-        connectorx_spec = importlib.util.find_spec("connectorx")
-        if platform.processor() == "aarch64" or chunksize or connectorx_spec is None:
+        try:
+            import connectorx as cx
+            badcx = False
+        except ImportError:
+            badcx = True
+        if chunksize or badcx:
             df = pd.read_sql(sql, con, chunksize=chunksize, **kwargs)
         else:
-            import connectorx as cx
             df = cx.read_sql(re.sub("\+\w+(?=:)", "", str(url)), sql, **kwargs)
         def transform(df):
             for c in df.columns:
@@ -202,7 +200,7 @@ def read_sql(sql, con, chunksize=None, port_shift=0, **kwargs):
     return map(transform, df) if chunksize else transform(df)
 
 
-def to_sql(df, name, con, port_shift=0, index=False, if_exists="append", keys=None, dtype=None, chengine="ReplacingMergeTree()", ignore_duplicate=True, category_keys=[], range_keys=[], **kwargs):
+def to_sql(df, name, con, port_shift=0, index=False, if_exists="append", keys=None, dtype=None, ignore_duplicate=True, category_keys=[], range_keys=[], **kwargs):
     if len(df) == 0:
         return
     con = to_conn(con)
@@ -214,7 +212,7 @@ def to_sql(df, name, con, port_shift=0, index=False, if_exists="append", keys=No
             df[c] = df[c].dt.total_seconds().mul(1e6).astype("int64")
         if keys is None:
             keys = category_keys + range_keys
-        con.execute(get_schema(df, name, keys, con, dtype, chengine))
+        con.execute(get_schema(df, name, keys, con, dtype))
         if ignore_duplicate:
             df = drop_duplicates(df, name, con, category_keys, range_keys)
         if url.drivername == "clickhouse+native":
