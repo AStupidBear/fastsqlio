@@ -81,17 +81,18 @@ def drop_duplicates(df, name, con, category_keys=[], range_keys=[]):
     else:
         info = read_sql(f"PRAGMA table_info('{name}')", con)
         primary_keys = info.query("pk == True")["name"].to_list()
-    sql = f"SELECT {','.join(primary_keys)} FROM {name}"
+    fields = ','.join(['"' + k + '"' for k in primary_keys])
+    sql = f"SELECT {fields} FROM {name}"
     conditions = []
     for key in category_keys:
         pytype = table.columns[key].type.python_type
         uniq = ",".join([sqlquote(convert(pytype, x)) for x in df[key].unique()])
-        conditions.append(f"({key} IN (" + uniq + "))")
+        conditions.append(f'("{key}" IN ({uniq}))')
     for key in range_keys:
         pytype = table.columns[key].type.python_type
         vmin = sqlquote(convert(pytype, df[key].min()))
         vmax = sqlquote(convert(pytype, df[key].max()))
-        conditions.append(f"({key} BETWEEN {vmin} AND {vmax})")
+        conditions.append(f'("{key}" BETWEEN {vmin} AND {vmax})')
     if len(conditions) > 0:
         sql += " WHERE " + " AND ".join(conditions)
     df_sql = read_sql(sql, con)
