@@ -238,7 +238,8 @@ def to_sql(df, name, con, port_shift=0, index=False, if_exists="append", keys=No
             df = drop_duplicates(df, name, con, category_keys, range_keys)
         if url.drivername == "clickhouse+native":
             client = con.connection.connection.transport
-            client.insert_dataframe(f"INSERT INTO {name} VALUES", df)
+            columns = '"' + df.columns + '"'
+            client.insert_dataframe(f"INSERT INTO {name} ({','.join(columns)}) VALUES", df)
         else:
             port = url.port + port_shift
             connection = {
