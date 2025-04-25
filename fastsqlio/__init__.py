@@ -118,10 +118,30 @@ def query_dataframe(
         external_tables=external_tables, query_id=query_id,
         settings=settings
     )
-
-    return pd.DataFrame(
-        {col[0]: d for d, col in zip(data, columns)}
-    )
+    ch_pd_type_map = {
+        "UInt8": "uint8",
+        "UInt16": "uint16",
+        "UInt32": "uint32",
+        "UInt64": "uint64",
+        "Int8": "int8",
+        "Int16": "int16",
+        "Int32": "int32",
+        "Int64": "int64",
+        "Float32": "float32",
+        "Float64": "float64",
+        "Decimal": "float64",
+        "Date": "datetime64[ns]",
+        "Date32": "datetime64[ns]",
+        "DateTime": "datetime64[ns]",
+        "DateTime64": "datetime64[ns]",
+    }
+    dtype = {col[0]: ch_pd_type_map[col[1]] for col in columns if col[1] in ch_pd_type_map}
+    columns = [col[0] for col in columns]
+    data = {col: d for d, col in zip(data, columns)}
+    df = pd.DataFrame(data=data, columns=columns)
+    if df.empty:
+        df = df.astype(dtype)
+    return df
 
 
 def trasform_time(df):
