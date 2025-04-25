@@ -1,10 +1,8 @@
 import datetime
-import platform
 import re
 from numbers import Number
 
 import pandas as pd
-from pandahouse import read_clickhouse, to_clickhouse
 from sql_metadata import Parser
 from sqlalchemy import MetaData, create_engine, event
 from sqlalchemy.engine import Engine
@@ -170,16 +168,6 @@ def read_sql(sql, con, chunksize=None, port_shift=0, **kwargs):
         else:
             df = pd.read_sql(sql, con, chunksize=chunksize, **kwargs)
         transform = trasform_time
-    elif url.drivername == "clickhouse+http":
-        port = url.port + port_shift
-        connection = {
-            "host": "http://" + url.host + ":" + str(port), 
-            "database": url.database,
-            "user": url.username,
-            "password": url.password
-        }
-        df = read_clickhouse(sql, connection=connection, chunksize=chunksize, **kwargs)
-        transform = trasform_time
     elif url.drivername.startswith("duckdb"):
         c = con.connection.c
         query = c.execute(sql)
@@ -241,14 +229,7 @@ def to_sql(df, name, con, port_shift=0, index=False, if_exists="append", keys=No
             columns = '"' + df.columns + '"'
             client.insert_dataframe(f"INSERT INTO {name} ({','.join(columns)}) VALUES", df)
         else:
-            port = url.port + port_shift
-            connection = {
-                "host": "http://" + url.host + ":" + str(port), 
-                "database": url.database,
-                "user": url.username,
-                "password": url.password
-            }
-            to_clickhouse(df, name, connection=connection, index=False, **kwargs)
+            raise NotImplementedError(f"{url.drivername} is not supported yet")
     elif url.drivername.startswith("duckdb"):
         for c in df.columns[df.dtypes == "timedelta64[ns]"]:
             df[c] = df[c].dt.total_seconds().mul(1e6).astype("int64")
