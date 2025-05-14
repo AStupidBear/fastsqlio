@@ -128,17 +128,23 @@ def query_dataframe(
         "Float32": "float32",
         "Float64": "float64",
         "Decimal": "float64",
-        "Date": "datetime64[ns]",
-        "Date32": "datetime64[ns]",
-        "DateTime": "datetime64[ns]",
+        "Date": "datetime64[s]",
+        "Date32": "datetime64[s]",
+        "DateTime": "datetime64[s]",
         "DateTime64": "datetime64[ns]",
+        "Nullable(Date)": "datetime64[s]",
+        "Nullable(Date32)": "datetime64[s]",
+        "Nullable(DateTime)": "datetime64[s]",
+        "Nullable(DateTime64)": "datetime64[ns]",
     }
-    dtype = {col[0]: ch_pd_type_map[col[1]] for col in columns if col[1] in ch_pd_type_map}
+    if len(data) > 0:
+        dtype = {col[0]: ch_pd_type_map[col[1]] for col in columns if col[1] in ch_pd_type_map and col[1].startswith("Nullable")}
+    else:
+        dtype = {col[0]: ch_pd_type_map[col[1]] for col in columns if col[1] in ch_pd_type_map}
     columns = [col[0] for col in columns]
     data = {col: d for d, col in zip(data, columns)}
     df = pd.DataFrame(data=data, columns=columns)
-    if df.empty:
-        df = df.astype(dtype)
+    df = df.astype(dtype, errors="ignore")
     return df
 
 
