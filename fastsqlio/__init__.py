@@ -3,9 +3,23 @@ import re
 from numbers import Number
 
 import pandas as pd
+from clickhouse_sqlalchemy import engines
+from clickhouse_sqlalchemy.drivers.compilers.ddlcompiler import \
+    ClickHouseDDLCompiler
 from sql_metadata import Parser
 from sqlalchemy import MetaData, create_engine, event
 from sqlalchemy.engine import Engine
+
+_post_create_table = ClickHouseDDLCompiler.post_create_table
+
+
+def post_create_table(self, table, *args, **kwargs):
+    if not hasattr(table, 'engine'):
+        table.engine = engines.ReplacingMergeTree(primary_key=table.primary_key)
+    _post_create_table(self, table, *args, **kwargs)
+
+
+ClickHouseDDLCompiler.post_create_table = post_create_table
 
 
 def to_conn(con):
@@ -156,7 +170,7 @@ def trasform_time(df):
     return df
 
 
-def read_sql(sql, con, chunksize=None, port_shift=0, **kwargs):
+def read_sql(sql, con, chunksize=None, **kwargs):
     con = to_conn(con)
     if chunksize is not None:
         con = con.execution_options(stream_results=True, max_row_buffer=chunksize)
@@ -215,7 +229,7 @@ def read_sql(sql, con, chunksize=None, port_shift=0, **kwargs):
     return map(transform, df) if chunksize else transform(df)
 
 
-def to_sql(df, name, con, port_shift=0, index=False, if_exists="append", keys=None, dtype=None, ignore_duplicate=True, category_keys=[], range_keys=[], **kwargs):
+def to_sql(df, name, con, index=False, if_exists="append", keys=None, dtype=None, ignore_duplicate=True, category_keys=[], range_keys=[], **kwargs):
     if len(df) == 0:
         return
     con = to_conn(con)
