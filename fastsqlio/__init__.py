@@ -6,8 +6,9 @@ import pandas as pd
 from clickhouse_sqlalchemy import engines
 from clickhouse_sqlalchemy.drivers.compilers.ddlcompiler import \
     ClickHouseDDLCompiler
+from pandas.io.sql import get_schema
 from sql_metadata import Parser
-from sqlalchemy import MetaData, create_engine, event
+from sqlalchemy import MetaData, create_engine, event, text
 from sqlalchemy.engine import Engine
 
 _post_create_table = ClickHouseDDLCompiler.post_create_table
@@ -16,7 +17,8 @@ _post_create_table = ClickHouseDDLCompiler.post_create_table
 def post_create_table(self, table, *args, **kwargs):
     if not hasattr(table, 'engine'):
         table.engine = engines.ReplacingMergeTree(primary_key=table.primary_key)
-    _post_create_table(self, table, *args, **kwargs)
+    text = _post_create_table(self, table, *args, **kwargs)
+    return text
 
 
 ClickHouseDDLCompiler.post_create_table = post_create_table
@@ -30,71 +32,56 @@ def to_conn(con):
     return con
 
 
-def ignore_insert(conn, cursor, statement, parameters, context, executemany):
-    if "INSERT INTO " not in statement:
-        return statement, parameters
-    if conn.engine.name == "mysql":
-        statement = statement.replace("INSERT INTO ", "INSERT IGNORE INTO ")
-    elif conn.engine.name == "postgresql":
-        statement = statement.replace("INSERT INTO ", "INSERT ON CONFLICT IGNORE INTO ")
-    elif conn.engine.name == "sqlite":
-        statement = statement.replace("INSERT INTO ", "INSERT OR IGNORE INTO ")
-    return statement, parameters
-
-
-def convert(pytype, value):
-    if isinstance(value, datetime.datetime) and pytype == datetime.date:
-        return value.date()
+def get_table(con, name, schema=None):
+    meta = MetaData(schema=schema)
+    meta.reflect(bind=con)
+    if schema is None:
+        return meta.tables[name]
     else:
-        return value
+        return meta.tables[f"{schema}.{name}"]
 
 
-def sqlquote(value):
-    if isinstance(value, Number):
-        return str(value)
-    else:
-        return "'" + str(value) + "'"
+def create_table(df, name, keys, con, dtype, schema=None):
+    """Create table using SQLAlchemy if it doesn't exist."""
+    sql = get_schema(df, name, keys=keys, con=con, dtype=dtype, schema=schema)
+    con.execute(text(sql.replace("CREATE TABLE", "CREATE TABLE IF NOT EXISTS")))
 
 
-def get_table(con, name):
-    db = split_dbtbl(name)[0]
-    meta = MetaData(con, db)
-    meta.reflect()
-    return meta.tables[name]
-
-
-def split_dbtbl(name):
-    if "." in name:
-        return name.split(".")
-    else:
-        return None, name
-
-        
-def get_schema(df, name, keys, con, dtype):
-    url = con.engine.url
-    if url.drivername.startswith("clickhouse"):
-        con = create_engine(str(url).split("?")[0])
-    db, tbl = split_dbtbl(name)
-    from inspect import signature
-    if len(signature(pd.io.sql.get_schema).parameters) == 5:
-        sql = pd.io.sql.get_schema(df, tbl, keys=keys, con=con, dtype=dtype)
-    else:
-        sql = pd.io.sql.get_schema(df, tbl, keys=keys, con=con, dtype=dtype, schema=db)
-    sql = re.sub("CREATE TABLE", "CREATE TABLE IF NOT EXISTS", sql)
-    return sql
-
-
-def drop_duplicates(df, name, con, category_keys=[], range_keys=[]):
+def drop_duplicates(df, name, con, schema=None, category_keys=[], range_keys=[]):
     if not re.match("clickhouse|duckdb", con.engine.url.drivername):
         return df
-    table = get_table(con, name)
-    if con.engine.url.drivername.startswith("clickhouse"):
-        primary_keys = [c.name for c in table.engine.primary_key.columns]
-    else:
-        info = read_sql(f"PRAGMA table_info('{name}')", con)
-        primary_keys = info.query("pk == True")["name"].to_list()
+    table = get_table(con, name, schema=schema)
+    df0 = df.copy()
+    
+    # Use SQLAlchemy to get primary keys consistently across database types
+    primary_keys = [col.name for col in table.primary_key.columns]
+    
+    if not primary_keys:
+        # Fallback for engines that might not properly register primary keys in metadata
+        if con.engine.url.drivername.startswith("clickhouse"):
+            primary_keys = [c.name for c in table.engine.primary_key.columns]
+        elif con.engine.url.drivername.startswith("duckdb"):
+            info = read_sql(f"PRAGMA table_info('{name}')", con)
+            primary_keys = info.query("pk == True")["name"].to_list()
+    
+    if not primary_keys:
+        return df
+
+    def convert(pytype, value):
+        if isinstance(value, datetime.datetime) and pytype == datetime.date:
+            return value.date()
+        else:
+            return value
+
+    def sqlquote(value):
+        if isinstance(value, Number):
+            return str(value)
+        else:
+            return "'" + str(value) + "'"
+
     fields = ','.join(['"' + k + '"' for k in primary_keys])
-    sql = f"SELECT {fields} FROM {name}"
+    table_name = name if schema is None else f"{schema}.{name}"
+    sql = f"SELECT {fields} FROM {table_name}"
     conditions = []
     for key in category_keys:
         pytype = table.columns[key].type.python_type
@@ -117,9 +104,7 @@ def drop_duplicates(df, name, con, category_keys=[], range_keys=[]):
     return df.set_index(primary_keys).drop(index=index, errors="ignore").reset_index()
 
 
-def query_dataframe(
-        self, query, params=None, external_tables=None, query_id=None,
-        settings=None):
+def query_dataframe(self, query, params=None, external_tables=None, query_id=None, settings=None):
     try:
         import pandas as pd
     except ImportError:
@@ -162,14 +147,6 @@ def query_dataframe(
     return df
 
 
-def trasform_time(df):
-    for c in df.columns:
-        if re.match("^time$", c, re.IGNORECASE) and \
-            df[c].dtype.name == "int64":
-            df[c] = pd.to_timedelta(df[c], unit="us")
-    return df
-
-
 def read_sql(sql, con, chunksize=None, **kwargs):
     con = to_conn(con)
     if chunksize is not None:
@@ -205,7 +182,7 @@ def read_sql(sql, con, chunksize=None, **kwargs):
     else:
         dtypes = {}
         for name in Parser(sql).tables:
-            table = get_table(con, name)
+            table = get_table(con, name, schema=schema)
             for c in table.columns:
                 dtypes[c.name] = c.type.python_type
         try:
@@ -229,11 +206,15 @@ def read_sql(sql, con, chunksize=None, **kwargs):
     return map(transform, df) if chunksize else transform(df)
 
 
-def to_sql(df, name, con, index=False, if_exists="append", keys=None, dtype=None, ignore_duplicate=True, category_keys=[], range_keys=[], **kwargs):
+def to_sql(df, name, con, schema=None, if_exists="append", index=False, keys=None, dtype=None, ignore_duplicate=True, category_keys=[], range_keys=[], **kwargs):
     if len(df) == 0:
         return
     con = to_conn(con)
     url = con.engine.url
+    if not schema:
+        if "." in name:
+            schema, name = name.split(".")
+    table_name = name if schema is None else f"{schema}.{name}"
     if index:
         df = df.reset_index()
     if url.drivername.startswith("clickhouse"):
@@ -241,29 +222,41 @@ def to_sql(df, name, con, index=False, if_exists="append", keys=None, dtype=None
             df[c] = df[c].dt.total_seconds().mul(1e6).astype("int64")
         if keys is None:
             keys = category_keys + range_keys
-        con.execute(get_schema(df, name, keys, con, dtype))
+        create_table(df, name, keys, con, dtype, schema)
         if ignore_duplicate:
-            df = drop_duplicates(df, name, con, category_keys, range_keys)
+            df = drop_duplicates(df, name, con, schema, category_keys, range_keys)
         if url.drivername == "clickhouse+native":
             client = con.connection.connection.transport
             columns = '"' + df.columns + '"'
-            client.insert_dataframe(f"INSERT INTO {name} ({','.join(columns)}) VALUES", df)
+            client.insert_dataframe(f"INSERT INTO {table_name} ({','.join(columns)}) VALUES", df)
         else:
             raise NotImplementedError(f"{url.drivername} is not supported yet")
     elif url.drivername.startswith("duckdb"):
         for c in df.columns[df.dtypes == "timedelta64[ns]"]:
             df[c] = df[c].dt.total_seconds().mul(1e6).astype("int64")
-        con.execute(get_schema(df, name, keys, con, dtype))
+        create_table(df, name, keys, con, dtype, schema)
         if ignore_duplicate:
-            df = drop_duplicates(df, name, con, category_keys, range_keys)
+            df = drop_duplicates(df, name, con, schema, category_keys, range_keys)
         conn = con.connection.c
-        conn.from_df(df).insert_into(name)
+        conn.from_df(df).insert_into(table_name)
         # conn.register("df", df)
-        # conn.execute(f"INSERT INTO {name} SELECT * FROM df")
+        # conn.execute(f"INSERT INTO {table_name} SELECT * FROM df")
     else:
         for c in df.columns[df.dtypes == "timedelta64[ns]"]:
             df[c] = df[c].add(pd.Timestamp(0)).dt.time
-        con.execute(get_schema(df, name, keys, con, dtype))
+        create_table(df, name, keys, con, dtype, schema)
+
+        def ignore_insert(conn, cursor, statement, parameters, context, executemany):
+            if "INSERT INTO " not in statement:
+                return statement, parameters
+            if conn.engine.name == "mysql":
+                statement = statement.replace("INSERT INTO ", "INSERT IGNORE INTO ")
+            elif conn.engine.name == "postgresql":
+                statement = statement.replace("INSERT INTO ", "INSERT ON CONFLICT IGNORE INTO ")
+            elif conn.engine.name == "sqlite":
+                statement = statement.replace("INSERT INTO ", "INSERT OR IGNORE INTO ")
+            return statement, parameters
+
         if ignore_duplicate and not event.contains(con, "before_cursor_execute", ignore_insert):
             event.listen(con, "before_cursor_execute", ignore_insert, retval=True)
-        df.to_sql(name, con, index=False, if_exists=if_exists, dtype=dtype, **kwargs)
+        df.to_sql(name, con, schema=schema, index=False, if_exists=if_exists, dtype=dtype, **kwargs)
